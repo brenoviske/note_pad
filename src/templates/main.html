@@ -93,36 +93,47 @@
     </div>
 
     <script>
+        /**
+         * 1. SECURITY & AUTHENTICATION BOUNCER
+         * This must run before anything else to prevent unauthorized flashes of content.
+         */
+        const token = localStorage.getItem('notepad_token');
+        if (!token) {
+            window.location.href = '/login';
+        }
 
-
+        /**
+         * 2. UI ELEMENT SELECTION
+         */
         const noteForm = document.getElementById('noteForm');
         const notesContainer = document.getElementById('notesContainer');
         const emptyMessage = document.getElementById('emptyMessage');
         const deleteModal = document.getElementById('deleteModal');
+        const searchInput = document.getElementById('searchInput');
         let noteIdToDelete = null;
 
-
-        // --- 1. LIVE SEARCH LOGIC ---
-        const searchInput = document.getElementById('searchInput');
-
-        searchInput.addEventListener('input', (e) => {
-            const term = e.target.value.toLowerCase();
-            const cards = document.querySelectorAll('.note-card');
-
-            cards.forEach(card => {
-                const title = card.querySelector('h3').innerText.toLowerCase();
-                if (title.includes(term)) {
-                    card.classList.remove('hidden');
-                } else {
-                    card.classList.add('hidden');
-                }
-            });
+        /**
+         * 3. AUTHENTICATED FETCH WRAPPER
+         * A helper to include the Bearer token in every request automatically.
+         */
+        const authHeader = () => ({
+            'Authorization': `Bearer ${token}`
         });
 
         // --- HYDRATION (LOAD ALL) ---
         async function loadNotes() {
             try {
-                const response = await fetch('/notes');
+                const response = await fetch('/notes', {
+                    headers: authHeader()
+                });
+
+                // If the token is expired or fake, kick them back to login
+                if (response.status === 401) {
+                    localStorage.removeItem('notepad_token');
+                    window.location.href = '/login';
+                    return;
+                }
+
                 const notes = await response.json();
                 if (notes.length > 0) {
                     emptyMessage.style.display = 'none';
@@ -130,59 +141,56 @@
                         notesContainer.appendChild(createNoteCard(note.id, note.title, note.content));
                     });
                 }
-            } catch (err) { console.error("Load failed:", err); }
+            } catch (err) {
+                console.error("Load failed:", err);
+            }
         }
-        window.addEventListener('DOMContentLoaded', loadNotes);
 
-        // --- CARD FACTORY ---
-        const createNoteCard = (id, title, content) => {
-            const div = document.createElement('div');
-            div.id = `card-${id}`;
-            div.className = "note-card bg-white border border-slate-200 p-6 rounded-2xl shadow-sm hover:shadow-md transition-all duration-300 group";
-            div.innerHTML = `
-                <div id="view-container-${id}">
-                    <div class="flex justify-between items-start mb-3">
-                        <h3 class="text-lg font-semibold text-slate-800 group-hover:text-blue-600 transition-colors" id="title-display-${id}">${title}</h3>
-                        <div class="flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button onclick="toggleEdit(${id})" class="text-sm grayscale hover:grayscale-0 transition-all">✏️</button>
-                            <button onclick="openDeleteModal(${id})" class="text-sm grayscale hover:grayscale-0 transition-all">🗑️</button>
-                        </div>
-                    </div>
-                    <p class="text-slate-500 leading-relaxed text-sm whitespace-pre-line" id="content-display-${id}">${content}</p>
-                </div>
+        // --- LIVE SEARCH LOGIC ---
+        searchInput.addEventListener('input', (e) => {
+            const term = e.target.value.toLowerCase();
+            const cards = document.querySelectorAll('.note-card');
 
-                <form id="edit-form-${id}" class="hidden space-y-4">
-                    <input type="text" name="title" value="${title}"
-                        class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none font-medium transition-all">
-                    <textarea name="content" rows="3"
-                        class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none text-sm transition-all">${content}</textarea>
-                    <div class="flex gap-3 justify-end items-center">
-                        <span id="feedback-${id}" class="text-[10px] font-bold uppercase hidden"></span>
-                        <button type="button" onclick="toggleEdit(${id})" class="text-[10px] text-slate-400 font-bold uppercase hover:text-slate-600">Cancel</button>
-                        <button type="button" onclick="updateNote(${id})" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg text-xs font-bold uppercase transition-colors">Update</button>
-                    </div>
-                </form>
-            `;
-            return div;
+            cards.forEach(card => {
+                const title = card.querySelector('h3').innerText.toLowerCase();
+                card.classList.toggle('hidden', !title.includes(term));
+            });
+        });
+
+        // --- CRUD ACTIONS (PROTECTED) ---
+
+        // CREATE
+        noteForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const formData = new FormData(noteForm);
+
+            try {
+                const response = await fetch('/notes/add', {
+                    method: 'POST',
+                    headers: authHeader(), // Secure!
+                    body: formData
+                });
+
+                const data = await response.json();
+                if (data.status === 'success') {
+                    emptyMessage.style.display = 'none';
+                    notesContainer.prepend(createNoteCard(data.id, formData.get('title'), formData.get('content')));
+                    noteForm.reset();
+                }
+            } catch (err) {
+                console.error(err);
+            }
         };
 
-        // --- MODAL LOGIC ---
-        function openDeleteModal(id) {
-            noteIdToDelete = id;
-            deleteModal.classList.remove('hidden');
-        }
-        function closeDeleteModal() {
-            deleteModal.classList.add('hidden');
-            noteIdToDelete = null;
-        }
-        document.getElementById('confirmDeleteBtn').onclick = () => deleteNote(noteIdToDelete);
-
-        // --- CRUD ACTIONS ---
+        // DELETE
         async function deleteNote(id) {
             try {
                 const response = await fetch('/notes/delete', {
                     method: 'DELETE',
-                    headers: {'id':id}
+                    headers: {
+                        ...authHeader(), // Merge auth header with your ID header
+                        'id': id
+                    }
                 });
                 const data = await response.json();
                 if (data.status === 'success') {
@@ -190,9 +198,12 @@
                     closeDeleteModal();
                     if (notesContainer.children.length === 1) emptyMessage.style.display = 'block';
                 }
-            } catch (err) { console.error(err); }
+            } catch (err) {
+                console.error(err);
+            }
         }
 
+        // UPDATE
         async function updateNote(id) {
             const editForm = document.getElementById(`edit-form-${id}`);
             const formData = new FormData(editForm);
@@ -200,7 +211,10 @@
             try {
                 const response = await fetch('/notes/update', {
                     method: 'PUT',
-                    headers: { 'id': id },
+                    headers: {
+                        ...authHeader(),
+                        'id': id
+                    },
                     body: formData
                 });
                 const data = await response.json();
@@ -209,27 +223,62 @@
                     document.getElementById(`content-display-${id}`).innerText = editForm.content.value;
                     toggleEdit(id);
                 }
-            } catch (err) { console.error(err); }
+            } catch (err) {
+                console.error(err);
+            }
         }
 
-        noteForm.onsubmit = async (e) => {
-            e.preventDefault();
-            const formData = new FormData(noteForm);
-            try {
-                const response = await fetch('/notes/add', { method: 'POST', body: formData });
-                const data = await response.json();
-                if (data.status === 'success') {
-                    emptyMessage.style.display = 'none';
-                    notesContainer.prepend(createNoteCard(data.id, formData.get('title'), formData.get('content')));
-                    noteForm.reset();
-                }
-            } catch (err) { console.error(err); }
+        /**
+         * 4. UI HELPERS & TEMPLATES (No Auth needed here)
+         */
+        const createNoteCard = (id, title, content) => {
+            const div = document.createElement('div');
+            div.id = `card-${id}`;
+            div.className = "note-card bg-white border border-slate-200 p-6 rounded-2xl shadow-sm hover:shadow-md transition-all duration-300 group";
+            div.innerHTML = `
+            <div id="view-container-${id}">
+                <div class="flex justify-between items-start mb-3">
+                    <h3 class="text-lg font-semibold text-slate-800 group-hover:text-blue-600 transition-colors" id="title-display-${id}">${title}</h3>
+                    <div class="flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onclick="toggleEdit(${id})" class="text-sm grayscale hover:grayscale-0 transition-all">✏️</button>
+                        <button onclick="openDeleteModal(${id})" class="text-sm grayscale hover:grayscale-0 transition-all">🗑️</button>
+                    </div>
+                </div>
+                <p class="text-slate-500 leading-relaxed text-sm whitespace-pre-line" id="content-display-${id}">${content}</p>
+            </div>
+
+            <form id="edit-form-${id}" class="hidden space-y-4">
+                <input type="text" name="title" value="${title}"
+                    class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none font-medium transition-all">
+                <textarea name="content" rows="3"
+                    class="w-full px-3 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-100 focus:border-blue-400 outline-none text-sm transition-all">${content}</textarea>
+                <div class="flex gap-3 justify-end items-center">
+                    <span id="feedback-${id}" class="text-[10px] font-bold uppercase hidden"></span>
+                    <button type="button" onclick="toggleEdit(${id})" class="text-[10px] text-slate-400 font-bold uppercase hover:text-slate-600">Cancel</button>
+                    <button type="button" onclick="updateNote(${id})" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg text-xs font-bold uppercase transition-colors">Update</button>
+                </div>
+            </form>
+        `;
+            return div;
         };
+
+        function openDeleteModal(id) {
+            noteIdToDelete = id;
+            deleteModal.classList.remove('hidden');
+        }
+
+        function closeDeleteModal() {
+            deleteModal.classList.add('hidden');
+            noteIdToDelete = null;
+        }
 
         function toggleEdit(id) {
             document.getElementById(`view-container-${id}`).classList.toggle('hidden');
             document.getElementById(`edit-form-${id}`).classList.toggle('hidden');
         }
+
+        document.getElementById('confirmDeleteBtn').onclick = () => deleteNote(noteIdToDelete);
+        window.addEventListener('DOMContentLoaded', loadNotes);
     </script>
 </body>
 </html>
